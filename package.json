@@ -4,6 +4,7 @@
   "description": "ENS Governance Contracts",
   "main": "index.js",
   "scripts": {
+    "compile": "hardhat compile",
     "test": "export NODE_OPTIONS=--openssl-legacy-provider && hardhat test",
     "prettier": "prettier --write 'contracts/**/*V2.sol'",
     "dodoc": "npx hardhat dodoc",

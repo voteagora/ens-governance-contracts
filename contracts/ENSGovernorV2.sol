@@ -6,6 +6,7 @@ import "@openzeppelin/contracts/governance/extensions/GovernorProposalThreshold.
 import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import "./EnsCounting.sol";
 import "./ENSGovernor.sol";
@@ -15,17 +16,19 @@ import "./ENSGovernor.sol";
  * @dev Enhanced ENS Governor with bonding functionality.
  */
 contract ENSGovernorV2 is ENSGovernor {
-    uint256 public availableBondsBalance;
+    using SafeERC20 for ERC20Votes;
+
+    uint256 public forfeitedBondsBalance;
     uint256 public lockedBondsBalance;
-    uint256 public ensPerTarget = 1 ether; // we can add setter
 
     /**
      * @dev ProposalBond represents the bond associated with a proposal.
      */
     struct ProposalBond {
         uint256 amount; // The amount of bond deposited.
-        bool refunded; // Flag indicating if the bond has been refunded.
         address proposer; // The address of the proposer who deposited the bond.
+        bool refunded; // Flag indicating if the bond has been refunded.
+        bool forfeited; // Flag indicating if the bond is forfeited.
     }
 
     /**
@@ -40,13 +43,20 @@ contract ENSGovernorV2 is ENSGovernor {
      */
     event BondCreated(address indexed proposer, uint256 amount);
 
+    uint256 public bondPricePerTarget = 1 ether;
+
+    /**
+     * @notice Constructor to initialize the ENSGovernorV2 contract.
+     * @param _token The token used for voting.
+     * @param _timelock The timelock controller.
+     */
     constructor(
-        ENSToken _token,
+        ERC20Votes _token,
         TimelockController _timelock
     ) ENSGovernor(_token, _timelock) {}
 
     /**
-     * @dev Propose a governance action with a bond.
+     * @notice Propose a governance action with a bond.
      * @param targets The addresses to call.
      * @param values The values to send.
      * @param calldatas The calldata to send.
@@ -61,127 +71,92 @@ contract ENSGovernorV2 is ENSGovernor {
     ) public returns (uint256 proposalId) {
         // Transfer bond to the contract
         uint256 bondAmount = calculateBond(targets.length);
-        require(
-            token.transferFrom(msg.sender, address(this), bondAmount),
-            "ERC20: transferFrom failed"
-        );
-        lockedBondsBalance += bondAmount;
 
         // Create the proposal
         proposalId = propose(targets, values, calldatas, description);
 
-        // Store the bond details
-        _proposalBonds[proposalId] = ProposalBond({
-            amount: bondAmount,
-            refunded: false,
-            proposer: msg.sender
-        });
-
-        emit BondCreated(msg.sender, bondAmount);
+        token.safeTransferFrom(msg.sender, address(this), bondAmount);
+        createBond(proposalId, bondAmount);
     }
 
     /**
-     * @dev Calculate the bond amount based on the count of targets.
+     * @notice Calculate the bond amount based on the count of targets.
      * @param countOfTargets The number of targets in the proposal.
      * @return The calculated bond amount.
      */
     function calculateBond(
         uint256 countOfTargets
     ) public view returns (uint256) {
-        return countOfTargets * ensPerTarget;
+        return countOfTargets * bondPricePerTarget;
     }
 
     /**
-     * @dev Cancel a proposal and refund the bond if necessary.
-     * @param targets The addresses to call.
-     * @param values The values to send.
-     * @param calldatas The calldata to send.
-     * @param descriptionHash The hash of the proposal description.
-     * @return proposalId The ID of the proposal.
+     * @notice Create a bond for a proposal.
+     * @param proposalId The ID of the proposal.
+     * @param bondAmount The amount of bond.
      */
-    function _cancel(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override(ENSGovernor) returns (uint256) {
-        uint256 proposalId = super._cancel(
-            targets,
-            values,
-            calldatas,
-            descriptionHash
+    function createBond(uint256 proposalId, uint256 bondAmount) internal {
+        lockedBondsBalance += bondAmount;
+
+        _proposalBonds[proposalId] = ProposalBond({
+            amount: bondAmount,
+            proposer: msg.sender,
+            refunded: false,
+            forfeited: false
+        });
+
+        emit BondCreated(msg.sender, bondAmount);
+    }
+
+    /**
+     * @notice Refund the bond for a proposal if conditions are met.
+     * @param proposalId The ID of the proposal.
+     */
+    function refundBond(uint256 proposalId) public {
+        ProposalState status = state(proposalId);
+        require(
+            status != ProposalState.Pending && status != ProposalState.Active,
+            "Wrong proposal status"
         );
-        (
-            uint256 againstVotesWithoutBond,
-            uint256 againstVotes, // votesLength
-            ,
 
-        ) = proposalVotes(proposalId);
-
-        ProposalBond storage bond = _proposalBonds[proposalId];
-
-        if (againstVotes >= againstVotesWithoutBond) {
-            require(
-                token.transfer(bond.proposer, bond.amount),
-                "ERC20: transferFrom failed"
-            );
-        } else {
-            availableBondsBalance += bond.amount;
-        }
-        lockedBondsBalance -= bond.amount;
-        return proposalId;
-    }
-
-    /**
-     * @dev Internal function to execute a proposal.
-     * Overrides the _execute function in ENSGovernor.
-     * Transfers the bond amount back to the proposer upon successful execution.
-     * @param proposalId The ID of the proposal to execute.
-     * @param targets The list of addresses the proposal calls.
-     * @param values The list of values to send with the calls.
-     * @param calldatas The list of call data to send with the calls.
-     * @param descriptionHash The hash of the proposal description.
-     */
-    function _execute(
-        uint256 proposalId,
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        bytes32 descriptionHash
-    ) internal override(ENSGovernor) {
-        ProposalBond storage bond = _proposalBonds[proposalId];
+        (uint256 againstVotesWithoutBond,uint256 againstVotes,,) = proposalVotes(proposalId);
 
         require(
-            token.transfer(bond.proposer, bond.amount),
-            "ERC20: transferFrom failed"
+            againstVotes >= againstVotesWithoutBond,
+            "Bond cannot be refunded"
         );
+
+        ProposalBond storage bond = _proposalBonds[proposalId];
+        require(!bond.refunded, "Bond is refunded");
+
+        token.safeTransfer(bond.proposer, bond.amount);
         lockedBondsBalance -= bond.amount;
+        bond.refunded = true;
     }
 
     /**
-     * @dev Cancel a proposal and refund the bond if necessary (for testing purposes).
-     * @param targets The addresses to call.
-     * @param values The values to send.
-     * @param calldatas The calldata to send.
-     * @param descriptionHash The hash of the proposal description.
-     * @return proposalId The ID of the proposal.
+     * @notice Check if we can forfeit bond of the proposal
+     * @param proposalId The ID of the proposal.
      */
-    function cancel(
-        address[] memory targets,
-        uint256[] memory values,
-        bytes[] memory calldatas,
-        string calldata descriptionHash
-    ) public returns (uint256) {
-        uint256 proposalId = _cancel(
-            targets,
-            values,
-            calldatas,
-            keccak256(bytes(descriptionHash))
-        );
+    function checkAndForfeitBond(uint256 proposalId) public {
+        ProposalState status = state(proposalId);
         require(
-            msg.sender == _proposalBonds[proposalId].proposer,
-            "only proposer"
+            status != ProposalState.Pending && status != ProposalState.Active,
+            "Wrong proposal status"
         );
-        return proposalId;
+
+        (uint256 againstVotesWithoutBond,uint256 againstVotes,,) = proposalVotes(proposalId);
+
+        require(
+            againstVotes < againstVotesWithoutBond,
+            "Bond cannot be forfeited"
+        );
+
+        ProposalBond storage bond = _proposalBonds[proposalId];
+        require(!bond.forfeited, "Bond already forfeited");
+        
+        lockedBondsBalance -= bond.amount;
+        forfeitedBondsBalance += bond.amount;
+        bond.forfeited = true;
     }
 }

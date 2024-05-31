@@ -7,11 +7,10 @@ import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 
-import "./ENSToken.sol";
 import "./EnsCounting.sol";
 
 contract ENSGovernor is Governor, GovernorProposalThreshold, EnsCounting, GovernorVotes, GovernorVotesQuorumFraction, GovernorTimelockControl {
-    constructor(ENSToken _token, TimelockController _timelock)
+    constructor(ERC20Votes _token, TimelockController _timelock)
     Governor("ENS Governor")
     GovernorVotes(_token)
     GovernorVotesQuorumFraction(100) // 1%
