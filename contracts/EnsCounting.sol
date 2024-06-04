@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/governance/Governor.sol";
 /**
  * @dev Based on GovernorCountingSimple, and added AgainstWithoutBond VoteType logic
  */
-abstract contract EnsCounting is Governor {
+abstract contract ENSCounting is Governor {
 
     enum VoteType {
         Against,

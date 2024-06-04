@@ -1,14 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.2;
 
-import "@openzeppelin/contracts/governance/Governor.sol";
-import "@openzeppelin/contracts/governance/extensions/GovernorProposalThreshold.sol";
-import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
-import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol";
-import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-
-import "./EnsCounting.sol";
 import "./ENSGovernor.sol";
 
 /**
@@ -75,7 +68,7 @@ contract ENSGovernorV2 is ENSGovernor {
         // Create the proposal
         proposalId = propose(targets, values, calldatas, description);
 
-        token.safeTransferFrom(msg.sender, address(this), bondAmount);
+        token.safeTransferFrom(msg.sender, timelock(), bondAmount);
         createBond(proposalId, bondAmount);
     }
 
@@ -127,9 +120,11 @@ contract ENSGovernorV2 is ENSGovernor {
         );
 
         ProposalBond storage bond = _proposalBonds[proposalId];
+
+        require(bond.proposer != address(0) , "Bond is not active");
         require(!bond.refunded, "Bond is refunded");
 
-        token.safeTransfer(bond.proposer, bond.amount);
+        token.safeTransferFrom(timelock(), bond.proposer, bond.amount);
         lockedBondsBalance -= bond.amount;
         bond.refunded = true;
     }
@@ -153,8 +148,9 @@ contract ENSGovernorV2 is ENSGovernor {
         );
 
         ProposalBond storage bond = _proposalBonds[proposalId];
+
+        require(bond.proposer != address(0) , "Bond is not active");
         require(!bond.forfeited, "Bond already forfeited");
-        
         lockedBondsBalance -= bond.amount;
         forfeitedBondsBalance += bond.amount;
         bond.forfeited = true;

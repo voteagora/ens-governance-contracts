@@ -7,9 +7,9 @@ import "@openzeppelin/contracts/governance/extensions/GovernorVotes.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorVotesQuorumFraction.sol";
 import "@openzeppelin/contracts/governance/extensions/GovernorTimelockControl.sol";
 
-import "./EnsCounting.sol";
+import "./ENSCounting.sol";
 
-contract ENSGovernor is Governor, GovernorProposalThreshold, EnsCounting, GovernorVotes, GovernorVotesQuorumFraction, GovernorTimelockControl {
+contract ENSGovernor is Governor, GovernorProposalThreshold, ENSCounting, GovernorVotes, GovernorVotesQuorumFraction, GovernorTimelockControl {
     constructor(ERC20Votes _token, TimelockController _timelock)
     Governor("ENS Governor")
     GovernorVotes(_token)
