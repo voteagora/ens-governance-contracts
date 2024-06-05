@@ -151,6 +151,7 @@ contract ENSGovernorV2 is ENSGovernor {
 
         require(bond.proposer != address(0) , "Bond is not active");
         require(!bond.forfeited, "Bond already forfeited");
+
         lockedBondsBalance -= bond.amount;
         forfeitedBondsBalance += bond.amount;
         bond.forfeited = true;

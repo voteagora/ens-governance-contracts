@@ -53,6 +53,7 @@ describe("ENS delegate with bond", () => {
 
         const GovernorInstance = await ethers.getContractFactory("ENSGovernorV2");
         governor = await GovernorInstance.deploy(ensToken.address, timelockController.address);
+        timelockController.approveERC20ForGovernor(ensToken.address, governor.address);
     });
 
     beforeEach(async () => {
@@ -63,8 +64,8 @@ describe("ENS delegate with bond", () => {
         await ethers.provider.send('evm_revert', [snapshot]);
     });
 
-    // Test case to verify if bond is returned after cancelling the proposal
-    it("should return bond after cancel proposal", async () => {
+    // Test case to verify if bond is refunded after the end of vote on proposal
+    it("should return bond after finish proposal", async () => {
         // Initial balance setup
         const account2Balance = PROPOSAL_THRESHOLD;
         await ensToken.transfer(account2.address, account2Balance);
@@ -89,25 +90,26 @@ describe("ENS delegate with bond", () => {
         // Get proposal details and verify state and balance after proposal
         const receipt = await proposeTx.wait();
         const balanceAfterProposeWithBond = await ensToken.balanceOf(account2.address);
-        const proposalId = receipt.events[3].args.proposalId;
+        const proposalId = receipt.events[0].args.proposalId;
         const state = await governor.state(proposalId);
 
         expect(state).to.equal(ProposalState.Pending);
         expect(balanceAfterProposeWithBond).to.equal(balanceBeforeProposeWithBond.sub(bondAmount));
 
-        // Cancel the proposal and check if bond is returned
-        await governor.connect(account2).cancel(
-            [account2.address],
-            [0],
-            ['0x'],
-            ''
-        );
+        await mine(1);
+        await governor.state(proposalId);
+        await mine(VOTING_PERIOD);
+        await governor.state(proposalId);
+
+        // Refund the proposal and check if bond is returned
+        await governor.connect(account2).refundBond(proposalId);
+
         const balanceAfterCancelProposeWithBond = await ensToken.balanceOf(account2.address);
         expect(balanceBeforeProposeWithBond).to.equal(balanceAfterCancelProposeWithBond);
     });
 
-    // Test case to verify if bond is saved on contract if not returned
-    it("should save tokens on contract if bond not returned", async () => {
+    // Test case to verify if bond is saved on timeLockController contract
+    it("should save tokens on timeLockController contract if bond not returned", async () => {
         // Initial balance setup
         const account2Balance = PROPOSAL_THRESHOLD;
         await ensToken.transfer(account2.address, account2Balance);
@@ -121,6 +123,9 @@ describe("ENS delegate with bond", () => {
         const balanceBeforeProposeWithBond = await ensToken.balanceOf(account2.address);
         expect(account2Balance).to.equal(balanceBeforeProposeWithBond);
 
+        const timeLockBalanceBeforeProposeWithBond = await ensToken.balanceOf(timelockController.address);
+        expect(timeLockBalanceBeforeProposeWithBond).to.equal(0);
+
         // Propose with bond
         let proposeTx = await governor.connect(account2).proposeWithBond(
             [account2.address],
@@ -131,30 +136,34 @@ describe("ENS delegate with bond", () => {
 
         // Get proposal details
         const receipt = await proposeTx.wait();
-        const proposalId = receipt.events[3].args.proposalId;
+        const proposalId = receipt.events[0].args.proposalId;
 
         // Cast vote without returning bond
         await ensToken.delegate(owner.address);
         await governor.castVote(proposalId, VoteType.AgainstWithoutBondReturn);
 
-        // Cancel the proposal and verify bond is saved on contract
-        const balanceBeforeCancelProposeWithBond = await ensToken.balanceOf(account2.address);
-        await governor.connect(account2).cancel(
-            [account2.address],
-            [0],
-            ['0x'],
-            ''
-        );
+        await mine(1);
+        await governor.state(proposalId);
+        await mine(VOTING_PERIOD);
 
-        const bondsBalance = await governor.availableBondsBalance();
+        // Refund the proposal and verify bond is saved on timeLockController contract
+        const balanceBeforeCancelProposeWithBond = await ensToken.balanceOf(account2.address);
+
+        await expect(governor.connect(account2).refundBond(proposalId))
+            .to.be.revertedWith("Bond cannot be refunded");
+
+        await governor.checkAndForfeitBond(proposalId);
+
+        const bondsBalance = await governor.forfeitedBondsBalance();
         const balanceAfterCancelProposeWithBond = await ensToken.balanceOf(account2.address);
 
         expect(balanceBeforeCancelProposeWithBond).to.equal(balanceAfterCancelProposeWithBond);
         expect(bondsBalance).to.equal(bondAmount);
+        expect(bondAmount).to.equal(timeLockBalanceBeforeProposeWithBond.add(bondAmount));
     });
 
-    // Test to verify bond is not refunded when proposal is defeated
-    it("should not refund bond when proposal is defeated", async () => {
+    // Test to verify bond is not refunded when proposal is defeated and AgainstWithoutBondReturn
+    it("should not refund bond when proposal is defeated (AgainstWithoutBondReturn)", async () => {
         const account2Balance = PROPOSAL_THRESHOLD;
         await ensToken.transfer(account2.address, account2Balance);
         await ensToken.connect(account2).delegate(account2.address);
@@ -173,11 +182,11 @@ describe("ENS delegate with bond", () => {
         );
 
         const receipt = await proposeTx.wait();
-        const proposalId = receipt.events[3].args.proposalId;
+        const proposalId = receipt.events[0].args.proposalId;
 
         // Cast votes to defeat the proposal
         await ensToken.delegate(owner.address);
-        await governor.castVote(proposalId, VoteType.Against);
+        await governor.castVote(proposalId, VoteType.AgainstWithoutBondReturn);
 
         await mine(VOTING_PERIOD);
 
@@ -209,7 +218,7 @@ describe("ENS delegate with bond", () => {
         );
 
         const receipt = await proposeTx.wait();
-        const proposalId = receipt.events[3].args.proposalId;
+        const proposalId = receipt.events[0].args.proposalId;
 
         // Cast votes to pass the proposal
         await ensToken.delegate(owner.address);
@@ -228,6 +237,7 @@ describe("ENS delegate with bond", () => {
             ['0x'],
             ethers.utils.keccak256(ethers.utils.toUtf8Bytes(''))
         );
+        await governor.refundBond(proposalId);
 
         // Check bond refund
         const balanceAfterExecution = await ensToken.balanceOf(account2.address);
